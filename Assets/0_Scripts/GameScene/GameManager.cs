@@ -1,5 +1,8 @@
-using System.Collections.Generic;
+using SocketIOClient;
 using System;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+using System.Collections.Concurrent;
 using TMPro;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -15,11 +18,14 @@ public class GameManager : MonoBehaviour
 	GameObject shopObj = null;
 	GameObject inventoryObj = null;
 	GameObject loadingCircleObj = null;
+	GameObject roomObj = null;
 
 	//상점 아이템 리스트
 	List<GameObject> shopItemObjList = new List<GameObject>();
 	//인벤토리 아이템 리스트
 	List<GameObject> inventoryList = new List<GameObject>();
+
+	static ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
 
 	private void Awake()
 	{
@@ -36,10 +42,11 @@ public class GameManager : MonoBehaviour
 	private void Update()
 	{
 		EasterEgg();
+		CheckMainThreadActions();
 	}
 
 	//GameScene 불러오기
-	void Init()
+	async void Init()
 	{
 		lobbyObj = null;
 
@@ -56,6 +63,293 @@ public class GameManager : MonoBehaviour
 		lobbyObj.transform.Find("Wallet/UpdateWalletBtn").GetComponent<Button>().onClick.AddListener(OnClickUpdateWallet);
 		lobbyObj.transform.Find("ShopBtn").GetComponent<Button>().onClick.AddListener(OnClickEnterShop);
 		lobbyObj.transform.Find("InvenBtn").GetComponent<Button>().onClick.AddListener(OnClickEnterInventory);
+		lobbyObj.transform.Find("MakeRoomBtn").GetComponent<Button>().onClick.AddListener(OnClickMakeRoom);
+
+		UpdateWallet(true);
+
+		await NetworkManager.Instance.ConnectSocket(OnRoomUpdate);
+	}
+
+	void OnRoomUpdate(SocketIOResponse response)
+	{
+		try
+		{
+			string json = response.GetValue().ToString();
+			mainThreadActions.Enqueue(() =>
+			{
+				try
+				{
+					GameDataManager.Instance.myRoomInfo = JsonUtility.FromJson<Room>(json);
+					Debug.Log($"RoomUpdate : {json}");
+					SocketHandleResponse(GameDataManager.Instance.myRoomInfo.eventType);
+				}
+				catch (Exception ex)
+				{
+					Debug.LogError($"RoomUpdate parse/apply error : {ex.Message}");
+				}
+			});
+		}
+		catch (Exception ex)
+		{
+			mainThreadActions.Enqueue(() =>
+			{
+				Debug.LogError($"RoomUpdate error : {ex.Message}");
+			});
+		}
+	}
+
+	void SocketHandleResponse(string eventType)
+	{
+		switch (eventType)
+		{
+			case CommonDefine.SOCKET_CREATE_ROOM:
+			case CommonDefine.SOCKET_JOIN_ROOM:
+				{
+					mainThreadActions.Enqueue(EnterRoom);
+				}
+				break;
+			case CommonDefine.SOCKET_LEAVE_ROOM:
+				{
+					mainThreadActions.Enqueue(LeaveRoom);
+				}
+				break;
+
+		}
+	}
+
+	void CheckMainThreadActions()
+	{
+		while (mainThreadActions.TryDequeue(out var action))
+			action?.Invoke();
+	}
+
+
+	void OnClickMakeRoom()
+	{
+		//방 생성 관련 UI 생성
+		GameObject prefab = Resources.Load<GameObject>("prefabs/MakeRoom");
+		GameObject obj = Instantiate(prefab, Canvas);
+
+		//제목 설정
+		obj.transform.Find("Title/detail").GetComponent<TMP_Text>().text = GameDataManager.Instance.loginData.id + "의 방";
+
+		//레벨 선택용 dropdown UI 설정
+		var dropdown = obj.transform.Find("Level/Dropdown").GetComponent<TMP_Dropdown>();
+		//dropdown UI 초기화 및 재설정
+		dropdown.ClearOptions();
+		List<string> list = new List<string>();
+		for (int i = 0; i < 20; ++i)
+		{
+			list.Add("level " + (i + 1));
+		}
+		dropdown.AddOptions(list);
+
+		//각 버튼에 알맞은 함수들 연결
+		obj.transform.Find("CancelBtn").GetComponent<Button>().onClick.AddListener(() => DestroyObject(obj));
+		obj.transform.Find("Select/SelectBtn").GetComponent<Button>().onClick.AddListener(() => SelectPokemonMakeRoom(obj));
+
+		obj.transform.Find("Select/Context").GetComponent<TMP_Text>().text = "포켓몬을\n선택해주세요.";
+
+	}
+
+	//방 생성 함수의 포켓몬 선택 관련 함수
+	void SelectPokemonMakeRoom(GameObject makeRoomObj)
+	{
+		//포켓몬 선택 창 불러오기(인벤토리 창 재활용)
+		GameObject prefab = Resources.Load<GameObject>("prefabs/Inventory");
+		GameObject obj = Instantiate(prefab, Canvas);
+
+		//관련 UI 및 버튼 설정
+		obj.transform.Find("closeBtn").GetComponent<Button>().onClick.AddListener(() => DestroyObject(obj));
+
+		obj.transform.Find("Title").GetComponent<TMP_Text>().text = "포켓몬 선택";
+
+		Sprite[] spriteFrontAll = Resources.LoadAll<Sprite>("images/pokemon-front");
+		GameObject itemPrefab = Resources.Load<GameObject>("prefabs/InventoryItem");
+		Transform content = obj.transform.Find("ScrollView/Viewport/Content");
+
+		//각 포켓몬 정보들을 UI에 추가
+		for (int i = 0; i < GameDataManager.Instance.myPokemonList.Length; i++)
+		{
+			var pokemon = GameDataManager.Instance.myPokemonList[i];
+
+			GameObject itemObj = Instantiate(itemPrefab, content);
+
+			itemObj.transform.Find("Icon/IconImage").GetComponent<Image>().sprite = spriteFrontAll[pokemon.pokemonId - 1];
+
+			itemObj.transform.Find("Title").GetComponent<TMP_Text>().text = pokemon.name;
+			itemObj.transform.Find("Context").GetComponent<TMP_Text>().text = "hp : " + pokemon.hp.ToString();
+			//설정한 포켓몬으로 방 생성 UI를 재설정 하는 함수 연결
+			itemObj.transform.Find("Button").GetComponent<Button>().onClick.AddListener(() => UsePokemon_MakeRoom(pokemon, makeRoomObj));
+			itemObj.transform.Find("Button").GetComponent<Button>().onClick.AddListener(() => DestroyObject(obj));
+		}
+
+	}
+
+	//매개변수로 넘어온 포켓몬으로 UI를 재설정 하는 함수
+	void UsePokemon_MakeRoom(MyPokemon pokemon, GameObject makeRoomObj)
+	{
+		// 내 포켓몬 설정후 데이터 갱신
+		makeRoomObj.transform.Find("Select/Icon/IconImage").GetComponent<Image>().sprite = Resources.LoadAll<Sprite>("images/pokemon-front")[pokemon.pokemonId - 1];
+		makeRoomObj.transform.Find("Select/Context").GetComponent<TMP_Text>().text = pokemon.name + "\nhp : " + pokemon.hp.ToString();
+
+		//방 생성 버튼에 실제 방 생성 로직 삽입
+		makeRoomObj.transform.Find("MakeBtn").GetComponent<Button>().onClick.RemoveAllListeners();
+		makeRoomObj.transform.Find("MakeBtn").GetComponent<Button>().onClick.AddListener(() => MakeRoom(makeRoomObj, pokemon.pokemonId));
+		makeRoomObj.transform.Find("MakeBtn").GetComponent<Button>().onClick.AddListener(() => DestroyObject(makeRoomObj));
+	}
+	
+	//방을 생성하는 함수
+	void MakeRoom(GameObject obj, int pokemonId)
+	{
+		//설정된 레벨(보스 포켓몬 아이디)을 dropdown에서 추출
+		var dropdown = obj.transform.Find("Level/Dropdown").GetComponent<TMP_Dropdown>();
+		string dropdownText = dropdown.options[dropdown.value].text;
+		//숫자 0~9를 제외한 모든 문자를 찾아 제거한 후, 남은 문자열(숫자)를 반환
+		//Regex.Replace(입력_문자열, 패턴, 대체_문자열)
+		//dropdown text, 0~9를 제외한 모든 문자를, ""으로 변경후 반환
+		string level = Regex.Replace(dropdownText, "[^0-9]", "");
+		Debug.Log("level : " + level);
+
+		//방 생성 이벤트 호출
+		NetworkManager.Instance.CreateRoom(OnRoomUpdate, int.Parse(level), pokemonId);
+	}
+
+	void EnterRoom()
+	{
+		//포켓몬 스프라이트 이미지 불러오기
+		Sprite[] spriteFrontAll = Resources.LoadAll<Sprite>("images/pokemon-front");
+
+		//방 오브젝트가 없으면
+		if (roomObj == null)
+		{
+			//새로 생성
+			GameObject prefab = Resources.Load<GameObject>("prefabs/Room");
+			roomObj = Instantiate(prefab, Canvas);
+			//관련 UI 설정
+			roomObj.transform.Find("Boss/Icon/IconImage").GetComponent<Image>().sprite = spriteFrontAll[GameDataManager.Instance.myRoomInfo.bossPokemonId - 1];
+			roomObj.transform.Find("Boss/Level").GetComponent<TMP_Text>().text = "Level " + GameDataManager.Instance.myRoomInfo.bossPokemonId.ToString();
+			//관련 버튼 설정
+			roomObj.transform.Find("closeBtn").GetComponent<Button>().onClick.AddListener(() => NetworkManager.Instance.LeaveRoom(OnRoomUpdate, GameDataManager.Instance.myRoomInfo.roomId));
+			roomObj.transform.Find("closeBtn").GetComponent<Button>().onClick.AddListener(() => DestroyObject(roomObj));
+
+			//만약 user의 seq가 현재 들어온 방의 방장 seq와 동일하면
+			if (GameDataManager.Instance.loginData.seq == GameDataManager.Instance.myRoomInfo.leaderId)
+			{
+				//게임 시작 권한을 부여한다.
+				roomObj.transform.Find("startBtn").gameObject.SetActive(true);
+			}
+			else
+			{
+				//일반 유저라면 게임 시작을 할 수 없도록 막는다.
+				roomObj.transform.Find("startBtn").gameObject.SetActive(false);
+			}
+		}
+
+		//방에 참여한 user를 표시할 gameobect를 비활성화 한다.
+		for (int i = 1; i <= 4; ++i)
+		{
+			roomObj.transform.Find("User/" + i.ToString()).gameObject.SetActive(false);
+		}
+
+		//들어온 방의 멤버 수 만큼 반복문을 돌면서
+		for (int i = 0; i < GameDataManager.Instance.myRoomInfo.members.Count; ++i)
+		{
+			//각 멤버들을 UI 상에 표시하도록 설정한다.
+			string idx = (i + 1).ToString();
+			var member = GameDataManager.Instance.myRoomInfo.members[i];
+
+			//만약 해당 멤버가 방장이면, 해당 방의 제목을 방장 번호로 설정한다.
+			if (GameDataManager.Instance.myRoomInfo.leaderId == member.userSeq)
+			{
+				roomObj.transform.Find("Title").GetComponent<TMP_Text>().text = member.userId + "의 방";
+			}
+
+			roomObj.transform.Find("User/" + idx).gameObject.SetActive(true);
+			roomObj.transform.Find("User/" + idx + "/Name").GetComponent<TMP_Text>().text = member.userId;
+
+			roomObj.transform.Find("User/" + idx + "/Icon/IconImage").GetComponent<Image>().sprite = spriteFrontAll[member.pokemonId - 1];
+		}
+	}
+
+	//방을 떠나는 로직
+	//해당 함수는 이미 서버에서 해당 유저가 나간 후에 실행된다.
+	void LeaveRoom()
+	{
+		//내 seq 정보를 받아온다.
+		int mySeq = GameDataManager.Instance.loginData.seq;
+		//방장의 seq 정보를 받아온다.
+		int leaderSeq = GameDataManager.Instance.myRoomInfo.leaderId;
+		//내가 방장이면
+		if (mySeq == leaderSeq)
+		{
+			//나는 일단 떠난다고 가정한ㄷ.ㅏ
+			bool leaveMe = true;
+			//모든 멤버들을 돌면서
+			for (int i = 0; i < GameDataManager.Instance.myRoomInfo.members.Count; ++i)
+			{
+				//내가 아직 방에 남아있는 경우
+				int userSeq = GameDataManager.Instance.myRoomInfo.members[i].userSeq;
+				if (mySeq == userSeq)
+				{
+					//난 나가지 않는다고 설정
+					leaveMe = false;
+					break;
+				}
+			}
+			//내가 방을 나가는게 아니라면, EnterRoom을 통해 방 오브젝트 및 갱신
+			if (leaveMe == false)
+			{
+				EnterRoom();
+			}
+			//내가 나간 경우, 이미 관련 방 오브젝트는 파괴되었을 것이기 때문에 아무 처리 안함
+		}
+		else//내가 방장이 아니라면
+		{
+			//나와 방장은 떠난다고 가정한다.
+			bool leaveMe = true;
+			bool leaveLeader = true;
+			//서버의 방 멤버를 돌면서
+			for (int i = 0; i < GameDataManager.Instance.myRoomInfo.members.Count; ++i)
+			{
+				//내가 나간게 아니라면
+				int userSeq = GameDataManager.Instance.myRoomInfo.members[i].userSeq;
+				//난 떠나지 않는다고 설정한다.
+				if (mySeq == userSeq)
+				{
+					leaveMe = false;
+				}
+				//만약 방장도 나가지 않았다면
+				if (leaderSeq == userSeq)
+				{
+					//방장 또한 떠나지 않는다고 한다.
+					leaveLeader = false;
+				}
+			}
+
+			//만약 내가 떠나지 않았는데
+			if (leaveMe == false)
+			{
+				//방장이 떠나는 경우
+				if (leaveLeader)
+				{
+					//강제 추방 로직을 실행한다.
+					NetworkManager.Instance.LeaveRoom(OnRoomUpdate, GameDataManager.Instance.myRoomInfo.roomId);
+					DestroyRoomObject();
+					CreateMsgBoxOnBtn("방장이 방을 나갔습니다.");
+				}
+				else
+				{
+					//방장이 떠나지 않는 경우, 그냥 방 정보를 갱신한다.
+					EnterRoom();
+				}
+			}
+		}
+	}
+
+	void DestroyRoomObject()
+	{
+		DestroyObject(roomObj);
 	}
 
 	//상점 버튼을 누르면 호출되는 함수
@@ -560,5 +854,10 @@ public class GameManager : MonoBehaviour
 			lobbyObj.transform.Find("GrantBtn").gameObject.SetActive(false);
 			lobbyObj.transform.Find("DeductBtn").gameObject.SetActive(false);
 		}
+	}
+
+	async void OnDestroy()
+	{
+		await NetworkManager.Instance.DisconnectSocket();
 	}
 }

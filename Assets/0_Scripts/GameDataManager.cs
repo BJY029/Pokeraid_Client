@@ -21,6 +21,9 @@ public class GameDataManager : Singleton<GameDataManager> {
 
 	public PokemonShop[] pokemonShopList = null;
 
+	public Room[] roomList = null;
+	public Room myRoomInfo = null;
+
 	public double walletBalance = -1;
 
 	public string nextScene = "";
@@ -31,8 +34,9 @@ public class GameDataManager : Singleton<GameDataManager> {
 		myPokemonList = null;
 		myPokemonIds = null;
 		pokemonShopList = null;
-
 		pickedPokemon = null;
+		roomList = null;
+		myRoomInfo = null;
 
 		walletBalance = -1;
 	}

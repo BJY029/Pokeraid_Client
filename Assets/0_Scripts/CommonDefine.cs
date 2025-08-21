@@ -15,13 +15,20 @@ public class CommonDefine
     public const string GET_MY_WALLET_URL = "blockchain/balance";
     public const string BLOCKCHAIN_GRANT_URL = "blockchain/grant";
     public const string BLOCKCHAIN_DEDUCT_URL = "blockchain/deduct";
+	public const string ROOM_LIST_URL = "rooms";
+	public const string WEB_SOCKET_URL = "ws://localhost:3000/rooms";
 
-    public const string SHOP_LIST_URL = "shop/items";
+	public const string SHOP_LIST_URL = "shop/items";
 	public const string SHOP_PURCHASE_URL = "shop/purchase";
 
 	public const string LOADING_SCENE = "LoadingScene";
     public const string GAME_SCENE = "GameScene";
     public const string LOGIN_SCENE = "SampleScene";
+
+	public const string SOCKET_CREATE_ROOM = "createRoom";
+	public const string SOCKET_ROOM_UPDATE = "roomUpdate";
+	public const string SOCKET_JOIN_ROOM = "joinRoom";
+	public const string SOCKET_LEAVE_ROOM = "leaveRoom";
 }
 
 //로그인 할 때 전송할 데이터 객체
@@ -37,6 +44,7 @@ public class LoginPostData
 public class LoginData
 {
     public string sessionId;
+    public int seq;
     public string id;
 }
 
@@ -104,4 +112,24 @@ public class LinkWalletPostData
 public class PurchasePostData
 {
     public int itemId;
+}
+
+
+[System.Serializable]
+public class Room
+{
+	public string roomId;
+	public int leaderId;
+	public int bossPokemonId;
+	public List<RoomMember> members;
+	public string eventType;
+}
+
+[System.Serializable]
+public class RoomMember
+{
+	public int userSeq;
+	public string userId;
+	public int pokemonId;
+	public int order;
 }
