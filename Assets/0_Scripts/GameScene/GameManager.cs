@@ -64,6 +64,7 @@ public class GameManager : MonoBehaviour
 		lobbyObj.transform.Find("ShopBtn").GetComponent<Button>().onClick.AddListener(OnClickEnterShop);
 		lobbyObj.transform.Find("InvenBtn").GetComponent<Button>().onClick.AddListener(OnClickEnterInventory);
 		lobbyObj.transform.Find("MakeRoomBtn").GetComponent<Button>().onClick.AddListener(OnClickMakeRoom);
+		lobbyObj.transform.Find("RoomListBtn").GetComponent<Button>().onClick.AddListener(OnClickRoomList);
 
 		UpdateWallet(true);
 
@@ -215,6 +216,84 @@ public class GameManager : MonoBehaviour
 		NetworkManager.Instance.CreateRoom(OnRoomUpdate, int.Parse(level), pokemonId);
 	}
 
+	//방 리스트를 불러온다.
+	void OnClickRoomList()
+	{
+		NetworkManager.Instance.SendServerGet(CommonDefine.ROOM_LIST_URL, null, CallbackRoomList);
+	}
+
+	//성공적으로 방 리스트가 불러와지면 실행되는 함수
+	void CallbackRoomList(bool result)
+	{
+		//관련 UI 설정
+		GameObject prefab = Resources.Load<GameObject>("prefabs/RoomList");
+		GameObject obj = Instantiate(prefab, Canvas);
+
+		obj.transform.Find("closeBtn").GetComponent<Button>().onClick.AddListener(() => DestroyObject(obj));
+		obj.transform.Find("closeBtn").GetComponent<Button>().onClick.AddListener(() => { GameDataManager.Instance.roomList = null; });
+
+		Sprite[] spriteFrontAll = Resources.LoadAll<Sprite>("images/pokemon-front");
+		GameObject itemPrefab = Resources.Load<GameObject>("prefabs/RoomListItem");
+		Transform content = obj.transform.Find("ScrollView/Viewport/Content");
+
+		for (int i = 0; i < GameDataManager.Instance.roomList.Length; i++)
+		{
+			var room = GameDataManager.Instance.roomList[i];
+
+			GameObject itemObj = Instantiate(itemPrefab, content);
+
+			//Debug.LogError(room.members[0].pokemonId);
+			itemObj.transform.Find("Icon/IconImage").GetComponent<Image>().sprite = spriteFrontAll[room.members[0].pokemonId-1];
+
+			for(int k = 0; k < room.members.Count; k++)
+			{
+				var member = room.members[k];
+				if(room.leaderId == member.userSeq)
+				{
+					itemObj.transform.Find("Title").GetComponent<TMP_Text>().text = member.userSeq + "의 방";
+				}
+			}
+
+			itemObj.transform.Find("Level").GetComponent<TMP_Text>().text = "Level " + room.bossPokemonId.ToString();
+
+			//참가 버튼을 누르면, 포켓몬을 선택할 수 있도록 해준다.
+			itemObj.transform.Find("Button").GetComponent<Button>().onClick.AddListener(() => SelectPokemon_JoinRoom(room.roomId, obj));
+		}
+	}
+
+	//포켓몬 선택 창
+	void SelectPokemon_JoinRoom(string roomId, GameObject roomListObj)
+	{
+		GameObject prefab = Resources.Load<GameObject>("prefabs/Inventory");
+		GameObject obj = Instantiate(prefab, Canvas);
+
+		obj.transform.Find("closeBtn").GetComponent<Button>().onClick.AddListener(() => DestroyObject(obj));
+
+		obj.transform.Find("Title").GetComponent<TMP_Text>().text = "포켓몬 선택";
+
+		Sprite[] spriteFrontAll = Resources.LoadAll<Sprite>("images/pokemon-front");
+		GameObject itemPrefab = Resources.Load<GameObject>("prefabs/InventoryItem");
+		Transform content = obj.transform.Find("ScrollView/Viewport/Content");
+
+		for (int i = 0; i < GameDataManager.Instance.myPokemonList.Length; i++)
+		{
+			var pokemon = GameDataManager.Instance.myPokemonList[i];
+
+			GameObject itemObj = Instantiate(itemPrefab, content);
+
+			itemObj.transform.Find("Icon/IconImage").GetComponent<Image>().sprite = spriteFrontAll[pokemon.pokemonId - 1];
+
+			itemObj.transform.Find("Title").GetComponent<TMP_Text>().text = pokemon.name;
+			itemObj.transform.Find("Context").GetComponent<TMP_Text>().text = "hp : " + pokemon.hp.ToString();
+
+			//포켓몬을 선택하면 방에 참여한다.
+			itemObj.transform.Find("Button").GetComponent<Button>().onClick.AddListener(() => JoinRoom(roomId, pokemon.pokemonId));
+			itemObj.transform.Find("Button").GetComponent<Button>().onClick.AddListener(() => DestroyObject(obj));
+			itemObj.transform.Find("Button").GetComponent<Button>().onClick.AddListener(() => DestroyObject(roomListObj));
+		}
+
+	}
+
 	void EnterRoom()
 	{
 		//포켓몬 스프라이트 이미지 불러오기
@@ -262,14 +341,22 @@ public class GameManager : MonoBehaviour
 			//만약 해당 멤버가 방장이면, 해당 방의 제목을 방장 번호로 설정한다.
 			if (GameDataManager.Instance.myRoomInfo.leaderId == member.userSeq)
 			{
-				roomObj.transform.Find("Title").GetComponent<TMP_Text>().text = member.userId + "의 방";
+				roomObj.transform.Find("Title").GetComponent<TMP_Text>().text = member.userSeq + "의 방";
 			}
 
 			roomObj.transform.Find("User/" + idx).gameObject.SetActive(true);
-			roomObj.transform.Find("User/" + idx + "/Name").GetComponent<TMP_Text>().text = member.userId;
+			roomObj.transform.Find("User/" + idx + "/Name").GetComponent<TMP_Text>().text = member.userSeq.ToString();
 
 			roomObj.transform.Find("User/" + idx + "/Icon/IconImage").GetComponent<Image>().sprite = spriteFrontAll[member.pokemonId - 1];
 		}
+	}
+
+	//방 참여 이벤트를 전송한다.
+	//OnRoomUpdate에 의해서 EnterRoom 로직이 실행된다.
+	void JoinRoom(string roomId, int pokemonId)
+	{
+		Debug.Log("joinRoom : " +  roomId);	
+		NetworkManager.Instance.JoinRoom(OnRoomUpdate ,roomId, pokemonId);
 	}
 
 	//방을 떠나는 로직
